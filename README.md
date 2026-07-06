@@ -32,7 +32,7 @@
 
 | 항목 | 버전 | 필수 | 비고 |
 |------|------|:----:|------|
-| Python | **3.12** | ✅ | 백엔드·수집·NLP |
+| Python | **3.12 권장** | ✅ | 백엔드·수집·NLP (패키지 최소 요건은 3.8+, 개발/CI는 3.12 기준) |
 | PostgreSQL | **15+** | ✅ | 로컬 단일 인스턴스 |
 | JDK | **1.8+** | ✅ | KoNLPy 구동용 — 설치 후 **JAVA_HOME 환경변수 설정 필수** |
 | Node.js | **20 LTS+** | ✅ | Next.js 대시보드 |
@@ -135,7 +135,7 @@ collect_all_data.bat
 
 ```bat
 REM 주가(차트) — 키 불필요
-python -m semi_senti.cli collect price --stock-code 005930 --market KOSPI --force
+python -m semi_senti collect price --stock-code 005930 --market KOSPI --force
 
 REM 재무·공시(DART 키 필요) + 뉴스(네이버 키 필요) 통합 동기화
 REM PowerShell 에서는 curl 이 Invoke-WebRequest 별칭이므로 curl.exe 로 호출
