@@ -32,13 +32,14 @@
 
 | 항목 | 버전 | 필수 | 비고 |
 |------|------|:----:|------|
-| Python | **3.12** | ✅ | 백엔드·수집·NLP |
+| Python | **3.12 권장** | ✅ | 백엔드·수집·NLP (패키지 최소 요건은 3.8+, 개발/CI는 3.12 기준) |
 | PostgreSQL | **15+** | ✅ | 로컬 단일 인스턴스 |
 | JDK | **1.8+** | ✅ | KoNLPy 구동용 — 설치 후 **JAVA_HOME 환경변수 설정 필수** |
 | Node.js | **20 LTS+** | ✅ | Next.js 대시보드 |
 | RAM | 8GB+ | 권장 | 형태소 분석·대량 연산 |
 
 > Windows 기준으로 안내합니다. macOS/Linux도 명령만 각 OS에 맞게 바꾸면 동일하게 동작합니다.
+> PowerShell에서 한국어가 깨져 보이면 파일 손상이 아니라 콘솔 출력 인코딩 문제일 수 있습니다. `chcp 65001` 실행 후 새 터미널에서 다시 확인하거나, VS Code처럼 UTF-8을 지원하는 편집기로 열어 확인하세요.
 
 ---
 
@@ -134,7 +135,7 @@ collect_all_data.bat
 
 ```bat
 REM 주가(차트) — 키 불필요
-python -m semi_senti.cli collect price --stock-code 005930 --market KOSPI --force
+python -m semi_senti collect price --stock-code 005930 --market KOSPI --force
 
 REM 재무·공시(DART 키 필요) + 뉴스(네이버 키 필요) 통합 동기화
 REM PowerShell 에서는 curl 이 Invoke-WebRequest 별칭이므로 curl.exe 로 호출

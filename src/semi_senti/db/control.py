@@ -234,11 +234,11 @@ class DBControl:
         col_sql = ", ".join(f'"{c}"' for c in cols)
         ph_sql = ", ".join("%s" for _ in cols)
         values = tuple(data[c] for c in cols)
-        sql = f'INSERT INTO "{table}" ({col_sql}) VALUES ({ph_sql}) RETURNING id'
+        base_sql = f'INSERT INTO "{table}" ({col_sql}) VALUES ({ph_sql})'
         conn = self.connect()
         try:
             cur = conn.cursor()
-            cur.execute(sql, values)
+            cur.execute(base_sql + " RETURNING id", values)
             row = cur.fetchone()
             conn.commit()
             return int(row["id"]) if row and "id" in row else 0
@@ -247,6 +247,20 @@ class DBControl:
                 conn.rollback()
             except psycopg2.Error:  # pragma: no cover
                 pass
+            # id 컬럼이 없는 테이블(예: stocks, PK=stock_code)은 RETURNING id 가
+            # UndefinedColumn(42703) 을 낸다. 이 경우 RETURNING 없이 재실행한다.
+            if getattr(exc, "pgcode", None) == "42703":
+                try:
+                    cur = conn.cursor()
+                    cur.execute(base_sql, values)
+                    conn.commit()
+                    return 0
+                except psycopg2.Error as exc2:
+                    try:
+                        conn.rollback()
+                    except psycopg2.Error:  # pragma: no cover
+                        pass
+                    raise DBControlError(f"insert 실패: {exc2}") from exc2
             raise DBControlError(f"insert 실패: {exc}") from exc
 
     def insert_many(self, table: str, rows: Sequence[Mapping[str, Any]]) -> int:
@@ -263,7 +277,10 @@ class DBControl:
             cur = conn.cursor()
             psycopg2.extras.execute_batch(cur, sql, pg_rows)
             conn.commit()
-            return cur.rowcount or 0
+            # execute_batch 는 여러 문장으로 나눠 실행하므로 cur.rowcount 가
+            # 마지막 배치 수만 담아 신뢰할 수 없다. 성공 시 전체 행이 삽입되므로
+            # 실제 삽입 시도 행 수를 그대로 돌려준다.
+            return len(pg_rows)
         except psycopg2.Error as exc:
             try:
                 conn.rollback()
@@ -370,7 +387,7 @@ class DBControl:
     def table_exists(self, table: str) -> bool:
         row = self.fetch_one(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = %s",
+            "WHERE table_schema = current_schema() AND table_name = %s",
             (table,),
         )
         return row is not None
@@ -378,7 +395,7 @@ class DBControl:
     def list_tables(self) -> List[str]:
         rows = self.fetch_all(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' ORDER BY table_name"
+            "WHERE table_schema = current_schema() ORDER BY table_name"
         )
         return [r["table_name"] for r in rows]
 

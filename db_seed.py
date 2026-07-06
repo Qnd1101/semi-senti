@@ -96,7 +96,7 @@ def _print_summary(db: DBControl) -> None:
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="db_seed.py",
-        description="Semi Senti SQLite DB 초기화 + 기본 종목 등록",
+        description="Semi Senti PostgreSQL DB 초기화 + 기본 종목 등록",
     )
     parser.add_argument(
         "--reset-db",

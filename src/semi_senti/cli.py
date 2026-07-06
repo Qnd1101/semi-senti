@@ -4,7 +4,7 @@
 
     python -m semi_senti --version
     python -m semi_senti init-db
-    python -m semi_senti init-db --db ./data/custom.db --force
+    python -m semi_senti init-db --force
 """
 
 from __future__ import annotations
@@ -37,18 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser(
         "init-db",
-        help="Create SQLite database file and all schema tables",
+        help="Create all PostgreSQL schema tables (uses DATABASE_URL)",
     )
     init_parser.add_argument(
         "--db",
         dest="db_path",
         default=None,
-        help="DB file path (default: Settings.sqlite_path)",
+        help="(legacy) ignored after PostgreSQL migration; DATABASE_URL is used",
     )
     init_parser.add_argument(
         "--force",
         action="store_true",
-        help="Delete existing DB file before initialization (DEV ONLY)",
+        help="Drop existing tables before initialization (DEV ONLY)",
     )
 
     bootstrap_parser = subparsers.add_parser(
@@ -394,7 +394,7 @@ def _cmd_notify(args: argparse.Namespace) -> int:
                 row = nm.db().fetch_one(
                     "SELECT signal_type, price, band_low, band_high, "
                     "sentiment_score, signaled_at FROM signals "
-                    "WHERE stock_code = ? ORDER BY signaled_at DESC LIMIT 1",
+                    "WHERE stock_code = %s ORDER BY signaled_at DESC LIMIT 1",
                     (args.stock_code,),
                 )
                 if not row:

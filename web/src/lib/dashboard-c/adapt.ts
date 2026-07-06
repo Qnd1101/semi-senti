@@ -9,7 +9,7 @@ import type {
   SignalInfo,
 } from "@/lib/types";
 import { C, CYCLE_STAGES, sourceLabel, type SignalType } from "./tokens";
-import { eokToJo, wonToKoreanAmount, won, dec1, buildChange } from "./format";
+import { wonToKoreanAmount, won, dec1, buildChange } from "./format";
 import { buildHeadline, buildReasonCards, buildEvidence } from "./copy";
 import type {
   DashboardView,

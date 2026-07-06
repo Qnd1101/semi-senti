@@ -1,4 +1,4 @@
-"""``semi_senti.db.control.DBControl`` 단위 테스트 (T-004).
+"""``semi_senti.db.control.DBControl`` 단위 테스트 (T-004, PostgreSQL 기준).
 
 검증 항목
 1. 컨텍스트 매니저 / connect / close 라이프사이클
@@ -7,35 +7,34 @@
 4. update / delete 의 where 강제
 5. transaction 컨텍스트의 rollback
 6. 잘못된 SQL 시 ``DBControlError`` 래핑
+
+DB 격리
+-------
+``tests/conftest.py`` 가 전용 스키마(``test_semisenti``)로 접속을 격리하고 매
+테스트 전 테이블을 비운다. ``?`` placeholder 는 ``DBControl`` 내부에서 ``%s`` 로
+자동 변환되므로 그대로 사용한다.
 """
 
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
-from semi_senti.db import DBControl, init_database
+from semi_senti.db import ALL_TABLES, DBControl, init_database
 from semi_senti.db.control import DBControlError
 
 
 class TestDBControl(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmpdir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self._tmpdir.name) / "control_test.db"
-        init_database(db_path=self.db_path)
-
-    def tearDown(self) -> None:
-        self._tmpdir.cleanup()
+        init_database()
 
     def _db(self) -> DBControl:
-        return DBControl(db_path=self.db_path)
+        return DBControl()
 
     # ------------------------------------------------------------------ basic
     def test_context_manager_opens_and_closes(self) -> None:
         with self._db() as db:
             self.assertIsNotNone(db.connection)
-            self.assertEqual(sorted(db.list_tables()), ["financials", "news", "signals", "stocks"])
+            self.assertEqual(sorted(db.list_tables()), sorted(ALL_TABLES))
         with self.assertRaises(DBControlError):
             _ = db.connection  # close 이후 접근 → 에러
 
@@ -119,8 +118,9 @@ class TestDBControl(unittest.TestCase):
             db.insert("stocks", {"stock_code": "005930", "name": "삼성전자"})
             with self.assertRaises(RuntimeError):
                 with db.transaction() as conn:
-                    conn.execute(
-                        "UPDATE stocks SET name = ? WHERE stock_code = ?",
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE stocks SET name = %s WHERE stock_code = %s",
                         ("CHANGED", "005930"),
                     )
                     raise RuntimeError("simulate failure")
