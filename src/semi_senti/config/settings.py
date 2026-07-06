@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +64,29 @@ def _env_int(key: str, default: int) -> int:
     except ValueError:
         _LOGGER.warning("환경 변수 %s 값을 int 로 변환할 수 없습니다: %r → 기본값 %d 사용", key, raw, default)
         return default
+
+
+def _years_ago_yyyymmdd(years: int, *, today: Optional[date] = None) -> str:
+    """오늘로부터 ``years`` 년 전 날짜를 'YYYYMMDD' 로 반환한다(2/29 방어)."""
+    ref = today or date.today()
+    try:
+        start = ref.replace(year=ref.year - years)
+    except ValueError:  # 윤년 2/29 → 2/28
+        start = ref.replace(year=ref.year - years, day=28)
+    return start.strftime("%Y%m%d")
+
+
+def _default_pykrx_date_from() -> str:
+    """주가 수집 시작일(YYYYMMDD).
+
+    우선순위:
+    1. ``PYKRX_DATE_FROM`` 이 명시되면 그 값(고정 시작일).
+    2. 아니면 **현재 날짜 기준 ``DATA_COLLECTION_YEARS`` 년 전**(기본 2년).
+    """
+    explicit = os.getenv("PYKRX_DATE_FROM")
+    if explicit not in (None, ""):
+        return explicit
+    return _years_ago_yyyymmdd(_env_int("DATA_COLLECTION_YEARS", 2))
 
 
 @dataclass(frozen=True)
@@ -123,10 +147,13 @@ class Settings:
     http_timeout_seconds: int = field(default_factory=lambda: _env_int("HTTP_TIMEOUT_SECONDS", 10))
     http_max_retries: int = field(default_factory=lambda: _env_int("HTTP_MAX_RETRIES", 3))
 
-    # ----- pykrx (F-1.1.2, PRD §4.2) ----------------------------------------
-    pykrx_date_from: str = field(
-        default_factory=lambda: _env_str("PYKRX_DATE_FROM", "20140101")
+    # ----- 데이터 수집 기간 (F-1.1.2, PRD §4.2) ------------------------------
+    # 수집 기간(년). 미지정 시 2년. ``pykrx_date_from`` 의 동적 기본값에 사용.
+    data_collection_years: int = field(
+        default_factory=lambda: _env_int("DATA_COLLECTION_YEARS", 2)
     )
+    # 주가 수집 시작일. PYKRX_DATE_FROM 명시 시 그 값, 아니면 오늘-N년(동적).
+    pykrx_date_from: str = field(default_factory=_default_pykrx_date_from)
 
     # ----- Gemini API (F-3.3) -----------------------------------------------
     gemini_api_key: str = field(default_factory=lambda: _env_str("GEMINI_API_KEY", ""))
