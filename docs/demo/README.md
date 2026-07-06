@@ -6,6 +6,8 @@
 
 | 파일 | 내용 |
 |------|------|
+| `walkthrough.md` | **실제 앱 화면 캡처(Playwright) + 기능 설명** — 먼저 보세요 |
+| `screenshots/*.png` | 기능별 실제 화면 캡처 7종 |
 | `narration.md` | 기능별 나레이션(말할 내용) 프로즈 대본 + 녹화 팁 |
 | `srt/01-screener.srt` | 스크리너 자막 |
 | `srt/02-home.srt` | 종목 대시보드(홈) 자막 |
