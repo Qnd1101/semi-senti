@@ -1,11 +1,18 @@
-"""Phase 1-1 (T-001~T-004) 통합 검증 스크립트.
+"""Phase 1-1 (T-001~T-004) 통합 검증 스크립트 (PostgreSQL 기준).
 
 검증 범위
 ---------
 1. 필수 디렉터리 존재 여부 (`/collector`, `/engine`, `/admin`, `/db`)
-2. ``db/semisenti.db`` 파일 생성 및 4개 핵심 테이블(Stocks, Financials, News, Signals)
-   스키마 정상 빌드
+2. PostgreSQL 스키마(핵심 테이블 Stocks/Financials/News/Signals) 정상 빌드
 3. ``DBControl`` 의 INSERT / SELECT / UPDATE / UPSERT / DELETE / TRANSACTION 동작
+
+DB 격리
+-------
+개발용 ``semisenti`` DB(public 스키마)에는 시드 실데이터가 있으므로, 본
+검증은 **전용 스키마**(``test_semisenti``)로 격리해 수행한다. pytest 로 실행
+하면 ``tests/conftest.py`` 가 이미 격리를 세팅하고, 스크립트로 단독 실행해도
+``_ensure_test_schema()`` 가 동일하게 격리를 보장한다. 따라서 STEP 2 의
+``init_database(force=True)`` 가 public 데이터를 건드리지 않는다.
 
 실행 방법
 ---------
@@ -15,11 +22,11 @@
     python tests/integration/test_phase1_1.py
 
     # 2) 옵션 사용
-    python tests/integration/test_phase1_1.py --keep-db     # DB 파일 보존(기본)
-    python tests/integration/test_phase1_1.py --purge-db    # DB 파일까지 삭제
+    python tests/integration/test_phase1_1.py --keep-schema    # 테스트 스키마 보존(기본)
+    python tests/integration/test_phase1_1.py --purge-schema   # 테스트 스키마 삭제
 
-    # 3) unittest 디스커버리도 호환
-    python -m unittest tests.integration.test_phase1_1 -v
+    # 3) unittest / pytest 디스커버리도 호환
+    python -m pytest tests/integration/test_phase1_1.py -v
 
 설계 원칙
 ---------
@@ -27,21 +34,21 @@
   다음 단계까지 수행하여 풀 리포트를 출력한다.
 - 더미 데이터는 ``stock_code`` 의 ``TST_`` prefix 로만 사용하여, 정리 시
   ``WHERE stock_code LIKE 'TST_%'`` 일괄 삭제로 안전 정리한다.
-- 에러는 ``DBControlError`` / ``OSError`` / ``sqlite3.Error`` 등 가능한 모든
-  예외를 try/except 로 포착하여 ``[FAIL]`` 로 보고한다.
+- 에러는 ``DBControlError`` / ``OSError`` 등 가능한 모든 예외를 try/except 로
+  포착하여 ``[FAIL]`` 로 보고한다.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 import traceback
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
+from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # 0. 경로 부트스트랩
@@ -54,13 +61,33 @@ SRC_PATH: Path = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-# 통합 테스트가 실행되는 동안 항상 동일한 DB 경로를 보장하기 위해
-# (Settings 가 환경변수 기반이므로) 환경변수를 미리 강제 설정한다.
-_DEFAULT_DB_PATH = PROJECT_ROOT / "db" / "semisenti.db"
-os.environ.setdefault("SEMI_SENTI_SQLITE_PATH", str(_DEFAULT_DB_PATH))
+# 테스트 격리 스키마 (conftest 와 동일)
+TEST_SCHEMA: str = "test_semisenti"
+_DEFAULT_URL: str = "postgresql://semisenti:semisenti@localhost:5432/semisenti"
+
+
+def _ensure_test_schema() -> None:
+    """전용 스키마를 만들고 DATABASE_URL 이 그 스키마를 바라보게 한다.
+
+    conftest 가 이미 세팅한 경우에도 멱등하게 재적용된다. 단독 실행 시
+    개발용 public 스키마를 보호하기 위한 안전장치다.
+    """
+    import psycopg2
+
+    base = os.environ.get("DATABASE_URL", _DEFAULT_URL).split("?options=", 1)[0]
+    conn = psycopg2.connect(base, connect_timeout=5)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{TEST_SCHEMA}"')
+    conn.close()
+
+    sep = "&" if "?" in base else "?"
+    opt = quote(f"-c search_path={TEST_SCHEMA}", safe="")
+    os.environ["DATABASE_URL"] = f"{base}{sep}options={opt}"
+
 
 from semi_senti.db import DBControl, init_database  # noqa: E402 (sys.path 보정 후)
-from semi_senti.db.control import DBControlError  # noqa: E402
+from semi_senti.db.control import DBControlError, _mask_dsn  # noqa: E402
 from semi_senti.db.init_db import DatabaseInitError  # noqa: E402
 
 
@@ -184,7 +211,7 @@ def _print_header(step_no: int, step_total: int, title: str) -> None:
 
 
 def step_check_directories(reporter: TestReporter) -> None:
-    """STEP 1: 필수 디렉터리 5종 + DB 저장 디렉터리 보장."""
+    """STEP 1: 필수 디렉터리 4종 + DB 저장 디렉터리 보장."""
     _print_header(1, 5, "필수 디렉터리 존재 여부 확인 (os.path.isdir)")
 
     # 사용자가 명시한 `/collector` 등 모듈 폴더는 src layout 의
@@ -209,7 +236,7 @@ def step_check_directories(reporter: TestReporter) -> None:
                 message=f"후보 경로 모두 부재 → {[str(c) for c in candidates]}",
             )
 
-    # DB 파일 저장용 디렉터리 (없으면 생성)
+    # DB 스크립트/자산 디렉터리 (없으면 생성)
     db_dir = PROJECT_ROOT / "db"
     try:
         db_dir.mkdir(parents=True, exist_ok=True)
@@ -222,50 +249,47 @@ def step_check_directories(reporter: TestReporter) -> None:
         reporter.fail("DB 저장 디렉터리 보장: /db", exc)
 
 
-def step_init_db(reporter: TestReporter, db_path: Path) -> bool:
-    """STEP 2: DB 파일 생성. 실패하면 이후 단계 의미 없으므로 False 반환."""
-    _print_header(2, 5, "SQLite DB 파일 생성 (init_database)")
+def step_init_db(reporter: TestReporter) -> bool:
+    """STEP 2: 테스트 스키마 초기화. 실패하면 이후 단계 의미 없으므로 False 반환."""
+    _print_header(2, 5, "PostgreSQL 스키마 생성 (init_database, force=True)")
 
     try:
-        created = init_database(db_path=db_path, force=True)
-    except DatabaseInitError as exc:
-        reporter.fail("init_database() 호출", exc)
-        return False
-    except Exception as exc:  # pragma: no cover - 예기치 못한 예외
+        created = init_database(force=True)
+    except (DatabaseInitError, Exception) as exc:  # pragma: no cover - 연결 실패 등
         reporter.fail("init_database() 호출", exc)
         return False
 
     reporter.record(
         "init_database() 호출",
-        ok=True,
+        ok=isinstance(created, str) and created.startswith("postgresql://"),
         message=f"force=True 로 재생성 → {created}",
     )
 
-    exists = os.path.isfile(str(created))
-    size = os.path.getsize(str(created)) if exists else 0
-    reporter.record(
-        "DB 파일 생성 확인",
-        ok=exists and size > 0,
-        message=f"{created} ({size:,} bytes)",
-    )
-    return exists and size > 0
+    # 핵심 테이블이 실제로 생성됐는지 information_schema 로 확인.
+    try:
+        with DBControl() as db:
+            existing = set(db.list_tables())
+        ok = all(t in existing for t in REQUIRED_TABLES)
+        reporter.record(
+            "핵심 테이블 생성 확인",
+            ok=ok,
+            message=f"tables={sorted(existing)}",
+        )
+        return ok
+    except DBControlError as exc:
+        reporter.fail("핵심 테이블 생성 확인", exc)
+        return False
 
 
-def step_verify_tables(reporter: TestReporter, db_path: Path) -> None:
-    """STEP 3: sqlite_master 와 PRAGMA table_info 로 스키마 검증."""
+def step_verify_tables(reporter: TestReporter) -> None:
+    """STEP 3: information_schema 로 스키마 검증 + CHECK 제약 동작 확인."""
     _print_header(3, 5, "4개 핵심 테이블 스키마 검증")
 
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            cur = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            )
-            # SQLite 는 테이블명 비교 시 기본 case-insensitive 이지만,
-            # 우리 schema 의 물리명은 모두 소문자로 통일되어 있다.
-            existing = {row[0].lower() for row in cur.fetchall()}
-    except sqlite3.Error as exc:
-        reporter.fail("sqlite_master 조회", exc)
+        with DBControl() as db:
+            existing = set(db.list_tables())
+    except DBControlError as exc:
+        reporter.fail("테이블 목록 조회", exc)
         return
 
     for table in REQUIRED_TABLES:
@@ -274,10 +298,15 @@ def step_verify_tables(reporter: TestReporter, db_path: Path) -> None:
             continue
 
         try:
-            with sqlite3.connect(str(db_path)) as conn:
-                cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
-            col_names = [c[1] for c in cols]
-        except sqlite3.Error as exc:
+            with DBControl() as db:
+                cols = db.fetch_all(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = %s "
+                    "ORDER BY ordinal_position",
+                    (table,),
+                )
+            col_names = [c["column_name"] for c in cols]
+        except DBControlError as exc:
             reporter.fail(f"테이블 컬럼 조회: {table}", exc)
             continue
 
@@ -289,18 +318,17 @@ def step_verify_tables(reporter: TestReporter, db_path: Path) -> None:
 
     # 추가: signals 의 CHECK 제약(BUY/SELL/HOLD) 동작 확인
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute("PRAGMA foreign_keys = ON;")
-            conn.execute(
-                "INSERT INTO stocks (stock_code, name) VALUES (?, ?)",
-                (TEST_PREFIX + "CHK", "SCHEMA_CHECK_DUMMY"),
-            )
+        with DBControl() as db:
+            db.insert("stocks", {"stock_code": TEST_PREFIX + "CHK", "name": "SCHEMA_CHECK_DUMMY"})
             try:
-                conn.execute(
-                    "INSERT INTO signals "
-                    "(stock_code, signal_type, price, signaled_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (TEST_PREFIX + "CHK", "INVALID_TYPE", 1000, "2026-05-16T00:00:00"),
+                db.insert(
+                    "signals",
+                    {
+                        "stock_code": TEST_PREFIX + "CHK",
+                        "signal_type": "INVALID_TYPE",
+                        "price": 1000,
+                        "signaled_at": "2026-05-16T00:00:00+09:00",
+                    },
                 )
                 # 여기 도달하면 CHECK 제약이 동작하지 않은 것.
                 reporter.record(
@@ -308,28 +336,24 @@ def step_verify_tables(reporter: TestReporter, db_path: Path) -> None:
                     ok=False,
                     message="INVALID_TYPE 이 거부되지 않음",
                 )
-            except sqlite3.IntegrityError:
+            except DBControlError:
                 reporter.record(
                     "CHECK 제약: signals.signal_type",
                     ok=True,
                     message="BUY/SELL/HOLD 외 값 거부 OK",
                 )
             finally:
-                conn.execute(
-                    "DELETE FROM stocks WHERE stock_code = ?",
-                    (TEST_PREFIX + "CHK",),
-                )
-                conn.commit()
-    except sqlite3.Error as exc:
+                db.delete("stocks", where="stock_code = ?", where_params=(TEST_PREFIX + "CHK",))
+    except DBControlError as exc:
         reporter.fail("CHECK 제약: signals.signal_type", exc)
 
 
-def step_crud(reporter: TestReporter, db_path: Path) -> None:
+def step_crud(reporter: TestReporter) -> None:
     """STEP 4: DBControl CRUD 일관성 검증."""
     _print_header(4, 5, "DBControl CRUD 동작 검증")
 
     try:
-        db = DBControl(db_path=db_path)
+        db = DBControl()
     except Exception as exc:  # pragma: no cover
         reporter.fail("DBControl 인스턴스 생성", exc)
         return
@@ -476,7 +500,7 @@ def step_crud(reporter: TestReporter, db_path: Path) -> None:
                         "cleaned_text": "본문 정제 후 결과",
                         "source": "integration_test",
                         "url": "https://example.test/news/1",
-                        "published_at": "2026-05-16T09:00:00",
+                        "published_at": "2026-05-16T09:00:00+09:00",
                     },
                 )
                 db.insert(
@@ -489,7 +513,7 @@ def step_crud(reporter: TestReporter, db_path: Path) -> None:
                         "band_high": 130.0,
                         "sentiment_score": -75.0,
                         "rationale": "현재가<밴드하단 & 감성=-75",
-                        "signaled_at": "2026-05-16T10:00:00",
+                        "signaled_at": "2026-05-16T10:00:00+09:00",
                     },
                 )
                 reporter.record(
@@ -508,8 +532,9 @@ def step_crud(reporter: TestReporter, db_path: Path) -> None:
                 )
                 try:
                     with db.transaction() as conn:
-                        conn.execute(
-                            "UPDATE stocks SET name = ? WHERE stock_code = ?",
+                        cur = conn.cursor()
+                        cur.execute(
+                            "UPDATE stocks SET name = %s WHERE stock_code = %s",
                             ("롤백되어야_할_이름", TEST_PREFIX + "001"),
                         )
                         raise RuntimeError("의도된 예외 (rollback 검증)")
@@ -535,33 +560,30 @@ def step_crud(reporter: TestReporter, db_path: Path) -> None:
         reporter.fail("DBControl 컨텍스트 블록", exc)
 
 
-def step_cleanup(
-    reporter: TestReporter,
-    db_path: Path,
-    *,
-    purge_db: bool,
-) -> None:
-    """STEP 5: 더미 데이터 정리 + (옵션) DB 파일 삭제."""
+def _count_dummy(db: DBControl, table: str) -> int:
+    row = db.fetch_one(
+        f"SELECT COUNT(*) AS c FROM {table} WHERE stock_code LIKE ?",
+        (TEST_PREFIX + "%",),
+    )
+    return int(row["c"]) if row else 0
+
+
+def step_cleanup(reporter: TestReporter, *, purge_schema: bool) -> None:
+    """STEP 5: 더미 데이터 정리 + (옵션) 테스트 스키마 삭제."""
     _print_header(5, 5, "더미 데이터 정리 (cleanup)")
 
+    child_counts_before = {}
     # 1) 자식 테이블 row 개수 사전 확인 (CASCADE 검증용)
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute("PRAGMA foreign_keys = ON;")
-            child_counts_before = {}
+        with DBControl() as db:
             for tbl in ("financials", "news", "signals"):
-                cur = conn.execute(
-                    f"SELECT COUNT(*) FROM {tbl} WHERE stock_code LIKE ?",
-                    (TEST_PREFIX + "%",),
-                )
-                child_counts_before[tbl] = cur.fetchone()[0]
-    except sqlite3.Error as exc:
+                child_counts_before[tbl] = _count_dummy(db, tbl)
+    except DBControlError as exc:
         reporter.fail("cleanup 사전 카운트", exc)
-        child_counts_before = {}
 
     # 2) DBControl 을 통한 일괄 삭제 (stocks 만 지워도 FK CASCADE 로 자식도 정리)
     try:
-        with DBControl(db_path=db_path) as db:
+        with DBControl() as db:
             deleted = db.delete(
                 "stocks",
                 where="stock_code LIKE ?",
@@ -577,14 +599,8 @@ def step_cleanup(
 
     # 3) CASCADE 동작 확인 - 자식 테이블에 더미가 남았는지
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            remaining = {}
-            for tbl in ("financials", "news", "signals"):
-                cur = conn.execute(
-                    f"SELECT COUNT(*) FROM {tbl} WHERE stock_code LIKE ?",
-                    (TEST_PREFIX + "%",),
-                )
-                remaining[tbl] = cur.fetchone()[0]
+        with DBControl() as db:
+            remaining = {tbl: _count_dummy(db, tbl) for tbl in ("financials", "news", "signals")}
         all_clean = all(v == 0 for v in remaining.values())
         reporter.record(
             "CASCADE 정리 (자식 테이블 잔존 0)",
@@ -595,79 +611,70 @@ def step_cleanup(
                 else f"after={remaining}"
             ),
         )
-    except sqlite3.Error as exc:
+    except DBControlError as exc:
         reporter.fail("CASCADE 정리 확인", exc)
 
-    # 4) DB 무결성 검사
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            integrity = conn.execute("PRAGMA integrity_check;").fetchone()
-        ok = integrity is not None and str(integrity[0]).lower() == "ok"
-        reporter.record(
-            "PRAGMA integrity_check",
-            ok=ok,
-            message=str(integrity[0]) if integrity else "no result",
-        )
-    except sqlite3.Error as exc:
-        reporter.fail("PRAGMA integrity_check", exc)
-
-    # 5) (옵션) DB 파일 자체 삭제
-    if purge_db:
+    # 4) (옵션) 테스트 스키마 자체 삭제
+    if purge_schema:
         try:
-            if os.path.isfile(str(db_path)):
-                os.remove(str(db_path))
+            import psycopg2
+
+            base = os.environ.get("DATABASE_URL", _DEFAULT_URL).split("?options=", 1)[0]
+            conn = psycopg2.connect(base, connect_timeout=5)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE')
+            conn.close()
             reporter.record(
-                "DB 파일 삭제(--purge-db)",
-                ok=not os.path.isfile(str(db_path)),
-                message=str(db_path),
+                "테스트 스키마 삭제(--purge-schema)",
+                ok=True,
+                message=TEST_SCHEMA,
             )
-        except OSError as exc:
-            reporter.fail("DB 파일 삭제(--purge-db)", exc)
+        except Exception as exc:  # pragma: no cover
+            reporter.fail("테스트 스키마 삭제(--purge-schema)", exc)
 
 
 # ---------------------------------------------------------------------------
 # 5. 메인 진입점 (스크립트 모드)
 # ---------------------------------------------------------------------------
-def _print_banner(db_path: Path) -> None:
+def _print_banner() -> None:
     bar = "=" * 60
     print(bar)
     print(f"{_Color.BOLD} Semi Senti - Phase 1-1 Integration Verification{_Color.RESET}")
     print(bar)
     print(f" Project Root : {PROJECT_ROOT}")
-    print(f" Target DB    : {db_path}")
+    print(f" Target DB    : {_mask_dsn(os.environ.get('DATABASE_URL', _DEFAULT_URL))}")
+    print(f" Test schema  : {TEST_SCHEMA}")
     print(f" Python       : {sys.version.split()[0]}")
     print(bar)
 
 
-def run_verification(*, purge_db: bool = False) -> int:
+def run_verification(*, purge_schema: bool = False) -> int:
     """전체 검증 실행. 종료 코드(0=성공, 1=실패)를 반환한다."""
     _try_enable_color()
 
-    db_path = (PROJECT_ROOT / "db" / "semisenti.db").resolve()
-    _print_banner(db_path)
+    # 개발용 public 스키마를 보호하기 위해 전용 스키마로 격리.
+    try:
+        _ensure_test_schema()
+    except Exception as exc:  # pragma: no cover - 로컬 PG 미가동 등
+        print(f"  {_Color.RED}[FAIL]{_Color.RESET} 테스트 스키마 준비 실패: {exc}")
+        return 1
+
+    _print_banner()
 
     reporter = TestReporter()
     try:
         step_check_directories(reporter)
 
-        db_ready = step_init_db(reporter, db_path)
+        db_ready = step_init_db(reporter)
         if db_ready:
-            step_verify_tables(reporter, db_path)
-            step_crud(reporter, db_path)
+            step_verify_tables(reporter)
+            step_crud(reporter)
+            step_cleanup(reporter, purge_schema=purge_schema)
         else:
             print(
                 f"  {_Color.YELLOW}[WARN]{_Color.RESET} "
-                "DB 초기화 실패로 STEP 3·4 를 건너뜁니다."
-            )
-
-        # cleanup 은 DB 파일이 어떻게든 생성되어 있다면 시도한다.
-        if os.path.isfile(str(db_path)):
-            step_cleanup(reporter, db_path, purge_db=purge_db)
-        else:
-            reporter.record(
-                "cleanup 스킵",
-                ok=False,
-                message="DB 파일이 존재하지 않아 정리를 건너뜀",
+                "DB 초기화 실패로 STEP 3·4·5 를 건너뜁니다."
             )
     except KeyboardInterrupt:
         print("\n[중단] 사용자에 의해 중단되었습니다.")
@@ -685,18 +692,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
-        "--keep-db",
-        dest="purge_db",
+        "--keep-schema",
+        dest="purge_schema",
         action="store_false",
-        help="검증 종료 후 DB 파일을 보존한다 (기본값)",
+        help="검증 종료 후 테스트 스키마를 보존한다 (기본값)",
     )
     group.add_argument(
-        "--purge-db",
-        dest="purge_db",
+        "--purge-schema",
+        dest="purge_schema",
         action="store_true",
-        help="검증 종료 후 DB 파일도 삭제한다",
+        help="검증 종료 후 테스트 스키마(test_semisenti)를 삭제한다",
     )
-    parser.set_defaults(purge_db=False)
+    parser.set_defaults(purge_schema=False)
     return parser
 
 
@@ -706,13 +713,13 @@ def _build_parser() -> argparse.ArgumentParser:
 #    얇은 TestCase 한 개를 노출한다.
 # ---------------------------------------------------------------------------
 class Phase11IntegrationTest(unittest.TestCase):
-    """unittest 디스커버리 호환용 래퍼."""
+    """unittest / pytest 디스커버리 호환용 래퍼."""
 
     def test_full_phase_1_1(self) -> None:
-        exit_code = run_verification(purge_db=False)
+        exit_code = run_verification(purge_schema=False)
         self.assertEqual(exit_code, 0, "Phase 1-1 통합 검증에서 실패한 항목이 있습니다.")
 
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
-    sys.exit(run_verification(purge_db=args.purge_db))
+    sys.exit(run_verification(purge_schema=args.purge_schema))
