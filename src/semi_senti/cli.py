@@ -394,7 +394,7 @@ def _cmd_notify(args: argparse.Namespace) -> int:
                 row = nm.db().fetch_one(
                     "SELECT signal_type, price, band_low, band_high, "
                     "sentiment_score, signaled_at FROM signals "
-                    "WHERE stock_code = ? ORDER BY signaled_at DESC LIMIT 1",
+                    "WHERE stock_code = %s ORDER BY signaled_at DESC LIMIT 1",
                     (args.stock_code,),
                 )
                 if not row:
