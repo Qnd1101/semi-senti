@@ -34,7 +34,7 @@ class ScreenerRow(BaseModel):
 # 순수함수: 수익률 계산
 # ---------------------------------------------------------------------------
 
-SortKey = Literal["change", "price", "volume", "w1", "m1", "y1"]
+SortKey = Literal["name", "change", "price", "volume", "w1", "m1", "y1"]
 OrderKey = Literal["asc", "desc"]
 
 _DAYS_MAP: Dict[str, int] = {"w1": 7, "m1": 30, "y1": 365}
@@ -102,6 +102,7 @@ def period_return(
 # ---------------------------------------------------------------------------
 
 _FIELD_MAP: Dict[SortKey, str] = {
+    "name": "name",
     "change": "change_pct",
     "price": "price",
     "volume": "volume",
@@ -116,15 +117,20 @@ def sort_screener_items(
     sort: SortKey = "change",
     order: OrderKey = "desc",
 ) -> List[ScreenerRow]:
-    """ScreenerRow 목록을 sort/order 기준으로 정렬. null 은 항상 끝으로."""
+    """ScreenerRow 목록을 sort/order 기준으로 정렬.
+
+    - 숫자/문자열(종목명) 필드를 모두 지원한다.
+    - ``null`` 값은 asc/desc 와 무관하게 **항상 끝**으로 보낸다.
+    """
     field = _FIELD_MAP.get(sort, "change_pct")
     reverse = order == "desc"
 
-    def _key(row: ScreenerRow) -> tuple:
-        val = getattr(row, field, None)
-        if val is None:
-            # null 은 항상 끝(asc 면 +inf, desc 면 -inf)
-            return (1, 0.0)
-        return (0, val if not reverse else -val)
+    present = [r for r in items if getattr(r, field, None) is not None]
+    missing = [r for r in items if getattr(r, field, None) is None]
 
-    return sorted(items, key=_key)
+    def _val(row: ScreenerRow):
+        v = getattr(row, field)
+        return v.lower() if isinstance(v, str) else v
+
+    present.sort(key=_val, reverse=reverse)
+    return present + missing
