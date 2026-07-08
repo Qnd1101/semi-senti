@@ -89,6 +89,15 @@ app.add_middleware(
         "http://localhost:3001",
         "http://127.0.0.1:3001",
     ],
+    # 외부/LAN 접속 허용: 사설 IP(10/172.16-31/192.168)의 :3000·:3001 origin 을 반영.
+    # 정규식 매칭 시 미들웨어가 실제 origin 을 그대로 반영하므로 allow_credentials 와도 호환된다.
+    allow_origin_regex=(
+        r"http://(localhost|127\.0\.0\.1|"
+        r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+        r"192\.168\.\d{1,3}\.\d{1,3}|"
+        r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})"
+        r":(3000|3001)"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
